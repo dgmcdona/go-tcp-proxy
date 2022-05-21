@@ -136,7 +136,6 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		}
 
 		//execute replace
-		p.Log.Info("%d replacer functions", len(p.Replacers))
 		for _, replace := range p.Replacers {
 			b = replace(b)
 		}

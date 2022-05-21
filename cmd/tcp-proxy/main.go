@@ -81,9 +81,6 @@ func main() {
 		}
 
 		p.Matcher = matcher
-		if replacer != nil {
-			p.Replacers = append(p.Replacers, replacer)
-		}
 
 		if *config != "" {
 			readConfig(p, *config)
@@ -122,7 +119,6 @@ func readConfig(p *proxy.Proxy, path string) {
 		if r == nil {
 			continue
 		}
-		logger.Info("Filtering %s", reg)
 		p.Replacers = append(p.Replacers, r)
 	}
 }
