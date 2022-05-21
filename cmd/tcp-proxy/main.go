@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"net"
@@ -27,6 +28,7 @@ var (
 	unwrapTLS   = flag.Bool("unwrap-tls", false, "remote connection with TLS exposed unencrypted locally")
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
+	config      = flag.String("config", "", "path to config file containing filter regexes, one per line")
 )
 
 func main() {
@@ -79,7 +81,17 @@ func main() {
 		}
 
 		p.Matcher = matcher
-		p.Replacer = replacer
+		if replacer != nil {
+			p.Replacers = append(p.Replacers, replacer)
+		}
+
+		if *config != "" {
+			readConfig(p, *config)
+		}
+
+		if replacer != nil {
+			p.Replacers = append(p.Replacers, replacer)
+		}
 
 		p.Nagles = *nagles
 		p.OutputHex = *hex
@@ -91,6 +103,27 @@ func main() {
 		}
 
 		go p.Start()
+	}
+}
+
+func readConfig(p *proxy.Proxy, path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		logger.Warn("failed to open config file: %v", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+
+	for scanner.Scan() {
+		reg := strings.Trim(scanner.Text(), " \n\t")
+
+		r := createReplacer(reg + "~")
+		if r == nil {
+			continue
+		}
+		logger.Info("Filtering %s", reg)
+		p.Replacers = append(p.Replacers, r)
 	}
 }
 
