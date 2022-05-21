@@ -137,11 +137,8 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 
 		//execute replace
 		p.Log.Info("%d replacer functions", len(p.Replacers))
-		for i := range p.Replacers {
-			if p.Replacers[i] == nil {
-				p.Log.Warn("function %d is nil!!", i)
-			}
-			b = p.Replacers[i](b)
+		for _, replace := range p.Replacers {
+			b = replace(b)
 		}
 
 		//show output
