@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"bytes"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
+	"regexp"
+	"strings"
 )
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
@@ -18,7 +22,7 @@ type Proxy struct {
 	tlsAddress    string
 
 	Matcher   func([]byte)
-	Replacers []func([]byte) []byte
+	Replacers []Replacer
 
 	// Settings
 	Nagles    bool
@@ -136,8 +140,8 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		}
 
 		//execute replace
-		for _, replace := range p.Replacers {
-			b = replace(b)
+		for _, replacer := range p.Replacers {
+			b = replacer.Replace(b)
 		}
 
 		//show output
@@ -155,5 +159,72 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		} else {
 			p.receivedBytes += uint64(n)
 		}
+	}
+}
+
+type Replacer interface {
+	Replace([]byte) []byte
+}
+
+type ReplacerConfig struct {
+	ReplacerType      string `yaml:"type"`
+	SubString         string `yaml:"find"`
+	ReplacementString string `yaml:"replace"`
+	SearchBytes       []byte `yaml:"findbytes"`
+	ReplacementBytes  []byte `yaml:"replacebytes"`
+	Pattern           string `yaml:"pattern"`
+}
+
+type StringReplacer struct {
+	in  string
+	out string
+}
+
+type RegexReplacer struct {
+	Pattern     regexp.Regexp
+	Replacement string
+}
+
+type BytesReplacer struct {
+	In  []byte
+	Out []byte
+}
+
+func (br *BytesReplacer) Replace(src []byte) []byte {
+	return bytes.ReplaceAll(src, br.In, br.Out)
+}
+
+func (rr *RegexReplacer) Replace(in []byte) []byte {
+	return rr.Pattern.ReplaceAll(in, []byte(rr.Replacement))
+}
+
+func (sr *StringReplacer) Replace(in []byte) []byte {
+	sNew := strings.ReplaceAll(string(in), sr.in, sr.out)
+	return []byte(sNew)
+}
+
+func (r ReplacerConfig) Parse() (Replacer, error) {
+	switch r.ReplacerType {
+	case "substring":
+		if r.SubString == "" {
+			return nil, fmt.Errorf("no substring provided")
+		}
+		return &StringReplacer{r.SubString, r.ReplacementString}, nil
+	case "regex":
+		if r.Pattern == "" {
+			return nil, fmt.Errorf("regex pattern empty")
+		}
+		pattern, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compile regex: %w", err)
+		}
+		return &RegexReplacer{*pattern, r.ReplacementString}, nil
+	case "bytes":
+		if len(r.SearchBytes) == 0 {
+			return nil, fmt.Errorf("no search bytes provided")
+		}
+		return &BytesReplacer{r.SearchBytes, r.ReplacementBytes}, nil
+	default:
+		return nil, fmt.Errorf("unsupported replacer type: <%s>", r.ReplacerType)
 	}
 }

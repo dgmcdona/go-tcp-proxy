@@ -1,15 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"regexp"
 	"strings"
 
+	multierror "github.com/hashicorp/go-multierror"
 	proxy "github.com/jpillora/go-tcp-proxy"
+	yaml "gopkg.in/yaml.v3"
 )
 
 var (
@@ -58,7 +60,10 @@ func main() {
 	}
 
 	matcher := createMatcher(*match)
-	replacer := createReplacer(*replace)
+	replacer, err := createReplacer(*replace)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		logger.Warn(err.Error())
+	}
 
 	if *veryverbose {
 		*verbose = true
@@ -83,8 +88,20 @@ func main() {
 		p.Matcher = matcher
 
 		if *config != "" {
-			readConfig(p, *config)
+			f, err := os.Open(*config)
+			if err != nil {
+				logger.Warn("failed to read config: %v", err)
+				goto SKIPCONFIG
+			}
+			config, err := io.ReadAll(f)
+			if err != nil {
+				logger.Warn("error reading config data: %v", err)
+				goto SKIPCONFIG
+			}
+			readConfigData(p, config)
+
 		}
+	SKIPCONFIG:
 
 		if replacer != nil {
 			p.Replacers = append(p.Replacers, replacer)
@@ -103,24 +120,21 @@ func main() {
 	}
 }
 
-func readConfig(p *proxy.Proxy, path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		logger.Warn("failed to open config file: %v", err)
+func readConfigData(p *proxy.Proxy, config []byte) error {
+	var errs error
+
+	var configs []proxy.ReplacerConfig
+	if err := yaml.Unmarshal(config, &configs); err != nil {
+		return fmt.Errorf("error parsing config file: %v", err)
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-
-	for scanner.Scan() {
-		reg := strings.Trim(scanner.Text(), " \n\t")
-
-		r := createReplacer(reg + "~")
-		if r == nil {
-			continue
+	for _, r := range configs {
+		replacer, err := r.Parse()
+		if err != nil {
+			errs = multierror.Append(errs, fmt.Errorf("error parsing config item: %v", err))
 		}
-		p.Replacers = append(p.Replacers, r)
+		p.Replacers = append(p.Replacers, replacer)
 	}
+	return errs
 }
 
 func createMatcher(match string) func([]byte) {
@@ -143,27 +157,26 @@ func createMatcher(match string) func([]byte) {
 	}
 }
 
-func createReplacer(replace string) func([]byte) []byte {
+func createReplacer(replace string) (proxy.Replacer, error) {
 	if replace == "" {
-		return nil
+		return nil, io.ErrUnexpectedEOF
 	}
 	//split by / (TODO: allow slash escapes)
 	parts := strings.Split(replace, "~")
 	if len(parts) != 2 {
 		logger.Warn("Invalid replace option")
-		return nil
+		return nil, fmt.Errorf("Invalid replace option")
 	}
 
 	re, err := regexp.Compile(string(parts[0]))
 	if err != nil {
-		logger.Warn("Invalid replace regex: %s", err)
-		return nil
+		return nil, fmt.Errorf("Invalid replace regex: %s", err)
 	}
 
 	repl := []byte(parts[1])
 
 	logger.Info("Replacing %s with %s", re.String(), repl)
-	return func(input []byte) []byte {
-		return re.ReplaceAll(input, repl)
-	}
+	return &proxy.RegexReplacer{
+		Pattern:     *re,
+		Replacement: string(repl)}, nil
 }
