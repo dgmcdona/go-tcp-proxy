@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	proxy "github.com/jpillora/go-tcp-proxy"
+	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
 )
 
 var configValid = `
@@ -18,6 +18,21 @@ var configValid = `
   replacebytes: [0x55, 0x66, 0x77, 0x88]
 `
 
+var invalidConfigs = []string{
+	`
+- type: string
+  replace: bar
+`,
+	`
+- type: regex
+  replace: bar
+`,
+	`
+- type: bytes
+  replacebytes: [0x00]
+`,
+}
+
 func TestConfigParse(t *testing.T) {
 	p := new(proxy.Proxy)
 
@@ -31,5 +46,13 @@ func TestConfigParse(t *testing.T) {
 			t.Log(br.In)
 			t.Log(br.Out)
 		}
+	}
+
+	for _, ic := range invalidConfigs {
+		err := readConfigData(p, []byte(ic))
+		if err == nil {
+			t.Errorf("error should have been returned on invalid config parse")
+		}
+		t.Log(err.Error())
 	}
 }

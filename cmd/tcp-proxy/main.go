@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	multierror "github.com/hashicorp/go-multierror"
-	proxy "github.com/jpillora/go-tcp-proxy"
+	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
 	yaml "gopkg.in/yaml.v3"
 )
 
@@ -165,12 +165,12 @@ func createReplacer(replace string) (proxy.Replacer, error) {
 	parts := strings.Split(replace, "~")
 	if len(parts) != 2 {
 		logger.Warn("Invalid replace option")
-		return nil, fmt.Errorf("Invalid replace option")
+		return nil, fmt.Errorf("invalid replace option")
 	}
 
 	re, err := regexp.Compile(string(parts[0]))
 	if err != nil {
-		return nil, fmt.Errorf("Invalid replace regex: %s", err)
+		return nil, fmt.Errorf("invalid replace regex: %s", err)
 	}
 
 	repl := []byte(parts[1])
