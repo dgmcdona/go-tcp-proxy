@@ -131,8 +131,9 @@ func readConfigData(p *proxy.Proxy, config []byte) error {
 		replacer, err := r.Parse()
 		if err != nil {
 			errs = multierror.Append(errs, fmt.Errorf("error parsing config item: %v", err))
+		} else {
+			p.Replacers = append(p.Replacers, replacer)
 		}
-		p.Replacers = append(p.Replacers, replacer)
 	}
 	return errs
 }
