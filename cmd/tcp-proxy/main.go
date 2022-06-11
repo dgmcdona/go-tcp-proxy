@@ -9,9 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	multierror "github.com/hashicorp/go-multierror"
 	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
-	yaml "gopkg.in/yaml.v3"
 )
 
 var (
@@ -41,7 +39,7 @@ func main() {
 		Color:   *colors,
 	}
 
-	logger.Info("go-tcp-proxy (%s) proxing from %v to %v ", version, *localAddr, *remoteAddr)
+	logger.Info("go-tcp-proxy (%s) proxying from %v to %v ", version, *localAddr, *remoteAddr)
 
 	laddr, err := net.ResolveTCPAddr("tcp", *localAddr)
 	if err != nil {
@@ -85,6 +83,13 @@ func main() {
 			p = proxy.New(conn, laddr, raddr)
 		}
 
+		p.Log = proxy.ColorLogger{
+			Verbose:     *verbose,
+			VeryVerbose: *veryverbose,
+			Prefix:      fmt.Sprintf("Connection #%03d ", connid),
+			Color:       *colors,
+		}
+
 		p.Matcher = matcher
 
 		if *config != "" {
@@ -93,12 +98,16 @@ func main() {
 				logger.Warn("failed to read config: %v", err)
 				goto SKIPCONFIG
 			}
+			defer f.Close()
+
 			config, err := io.ReadAll(f)
 			if err != nil {
 				logger.Warn("error reading config data: %v", err)
 				goto SKIPCONFIG
 			}
-			readConfigData(p, config)
+			if err := p.LoadConfig(config); err != nil {
+				logger.Warn("error loading config: %v", err)
+			}
 
 		}
 	SKIPCONFIG:
@@ -109,33 +118,9 @@ func main() {
 
 		p.Nagles = *nagles
 		p.OutputHex = *hex
-		p.Log = proxy.ColorLogger{
-			Verbose:     *verbose,
-			VeryVerbose: *veryverbose,
-			Prefix:      fmt.Sprintf("Connection #%03d ", connid),
-			Color:       *colors,
-		}
 
 		go p.Start()
 	}
-}
-
-func readConfigData(p *proxy.Proxy, config []byte) error {
-	var errs error
-
-	var configs []proxy.ReplacerConfig
-	if err := yaml.Unmarshal(config, &configs); err != nil {
-		return fmt.Errorf("error parsing config file: %v", err)
-	}
-	for _, r := range configs {
-		replacer, err := r.Parse()
-		if err != nil {
-			errs = multierror.Append(errs, fmt.Errorf("error parsing config item: %v", err))
-		} else {
-			p.Replacers = append(p.Replacers, replacer)
-		}
-	}
-	return errs
 }
 
 func createMatcher(match string) func([]byte) {

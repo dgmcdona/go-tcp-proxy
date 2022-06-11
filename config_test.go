@@ -1,9 +1,8 @@
-package main
+package proxy
 
 import (
+	"bytes"
 	"testing"
-
-	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
 )
 
 var configValid = `
@@ -34,25 +33,37 @@ var invalidConfigs = []string{
 }
 
 func TestConfigParse(t *testing.T) {
-	p := new(proxy.Proxy)
+	var p Proxy
+	p.Log = NullLogger{}
 
-	if err := readConfigData(p, []byte(configValid)); err != nil {
+	if err := p.LoadConfig([]byte(configValid)); err != nil {
 		t.Errorf("failed to parse valid config: %v", err)
 	}
 
 	for _, f := range p.Replacers {
-		t.Logf("replacer type: %T", f)
-		if br, ok := f.(*proxy.BytesReplacer); ok {
-			t.Log(br.In)
-			t.Log(br.Out)
-		}
+		t.Log(f.String())
 	}
 
 	for _, ic := range invalidConfigs {
-		err := readConfigData(p, []byte(ic))
+		err := p.LoadConfig([]byte(ic))
 		if err == nil {
 			t.Errorf("error should have been returned on invalid config parse")
 		}
 		t.Log(err.Error())
 	}
+}
+
+func TestReplaceByte(t *testing.T) {
+	br := &BytesReplacer{
+		[]byte{0x31, 0x33, 0x33, 0x37},
+		[]byte{0x62, 0x65, 0x65, 0x66},
+	}
+
+	in := "I am 1337"
+	out := "I am beef"
+	replaced := br.Replace([]byte(in))
+	if !bytes.Equal([]byte(out), replaced) {
+		t.Errorf("failed to replace bytes correctly: wanted %s, got %s", out, string(replaced))
+	}
+	t.Log(string(replaced))
 }
