@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	yr "github.com/hillu/go-yara"
+	yara "github.com/hillu/go-yara/v4"
 	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
 )
 
@@ -30,7 +30,7 @@ var (
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
 	config      = flag.String("config", "", "path to config file containing filter rules, one per line")
-	yara        = flag.String("yara", "", "path to file containing yara rules for connection blocking")
+	yaraConfig  = flag.String("yara", "", "path to file containing yara rules for connection blocking")
 )
 
 func main() {
@@ -113,13 +113,17 @@ func main() {
 
 		}
 	SKIPCONFIG:
-		if *yara != "" {
-			rules, err := yr.LoadRules(*yara)
+		if *yaraConfig != "" {
+			rules, err := yara.LoadRules(*yaraConfig)
 			if err != nil {
 				logger.Warn("failed to get yara rules: %v", err)
 				goto SKIPYARA
 			}
-			p.Rules = rules
+			p.Scanner, err = yara.NewScanner(rules)
+			if err != nil {
+				logger.Warn("failed to create new yara scanner: %v", err)
+				p.Scanner = nil
+			}
 		}
 	SKIPYARA:
 

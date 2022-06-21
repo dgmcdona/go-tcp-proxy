@@ -5,7 +5,7 @@ import (
 	"io"
 	"net"
 
-	yara "github.com/hillu/go-yara"
+	yara "github.com/hillu/go-yara/v4"
 )
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
@@ -96,8 +96,14 @@ func (p *Proxy) Start() {
 }
 
 func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, error) {
-	p.Log.Info("Rule %s matched: dropping packet", rule.Identifier)
-	return true, nil
+	p.Log.Info("Rule %s matched: terminating connection", rule.Identifier)
+	if err := p.lconn.Close(); err != nil {
+		p.Log.Warn("error closing connection: %v", err)
+	}
+	if err := p.rconn.Close(); err != nil {
+		p.Log.Warn("error closing connection: %v", err)
+	}
+	return false, nil
 }
 
 func (p *Proxy) err(s string, err error) {
