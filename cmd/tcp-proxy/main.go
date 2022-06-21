@@ -95,37 +95,15 @@ func main() {
 		p.Matcher = matcher
 
 		if *config != "" {
-			f, err := os.Open(*config)
-			if err != nil {
-				logger.Warn("failed to read config: %v", err)
-				goto SKIPCONFIG
+			if err := loadSimpleConfig(p, *config); err != nil {
+				logger.Warn("error loading yaml config: %v", err)
 			}
-			defer f.Close()
-
-			config, err := io.ReadAll(f)
-			if err != nil {
-				logger.Warn("error reading config data: %v", err)
-				goto SKIPCONFIG
-			}
-			if err := p.LoadConfig(config); err != nil {
-				logger.Warn("error loading config: %v", err)
-			}
-
 		}
-	SKIPCONFIG:
 		if *yaraConfig != "" {
-			rules, err := yara.LoadRules(*yaraConfig)
-			if err != nil {
-				logger.Warn("failed to get yara rules: %v", err)
-				goto SKIPYARA
-			}
-			p.Scanner, err = yara.NewScanner(rules)
-			if err != nil {
-				logger.Warn("failed to create new yara scanner: %v", err)
-				p.Scanner = nil
+			if err := loadYaraConfig(p, *yaraConfig); err != nil {
+				logger.Warn("error loading yara config: %v", err)
 			}
 		}
-	SKIPYARA:
 
 		if replacer != nil {
 			p.Replacers = append(p.Replacers, replacer)
@@ -136,6 +114,50 @@ func main() {
 
 		go p.Start()
 	}
+}
+
+func loadSimpleConfig(p *proxy.Proxy, filePath string) error {
+	f, err := os.Open(*config)
+	if err != nil {
+		return fmt.Errorf("failed to read config: %v", err)
+	}
+	defer f.Close()
+
+	config, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("error reading config data: %v", err)
+	}
+	if err := p.LoadConfig(config); err != nil {
+		return fmt.Errorf("error loading config: %v", err)
+	}
+	return nil
+
+}
+
+func loadYaraConfig(p *proxy.Proxy, filePath string) error {
+	cmp, err := yara.NewCompiler()
+	if err != nil {
+		return fmt.Errorf("error creating yara compiler: %v", err)
+	}
+	f, err := os.Open(*yaraConfig)
+	if err != nil {
+		return fmt.Errorf("failed to open yara config file: %v", err)
+	}
+	defer f.Close()
+	if err := cmp.AddFile(f, "proxy"); err != nil {
+		return fmt.Errorf("error adding file to compiler: %v", err)
+	}
+	rules, err := cmp.GetRules()
+	if err != nil {
+		return fmt.Errorf("failed to get yara rules: %v", err)
+	}
+	p.Scanner, err = yara.NewScanner(rules)
+	if err != nil {
+		p.Scanner = nil
+		return fmt.Errorf("failed to create new yara scanner: %v", err)
+	}
+	p.Scanner.SetCallback(p)
+	return nil
 }
 
 func createMatcher(match string) func([]byte) {
