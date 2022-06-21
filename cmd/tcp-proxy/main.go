@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	yr "github.com/hillu/go-yara"
 	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
 )
 
@@ -28,7 +29,8 @@ var (
 	unwrapTLS   = flag.Bool("unwrap-tls", false, "remote connection with TLS exposed unencrypted locally")
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
-	config      = flag.String("config", "", "path to config file containing filter regexes, one per line")
+	config      = flag.String("config", "", "path to config file containing filter rules, one per line")
+	yara        = flag.String("yara", "", "path to file containing yara rules for connection blocking")
 )
 
 func main() {
@@ -111,6 +113,15 @@ func main() {
 
 		}
 	SKIPCONFIG:
+		if *yara != "" {
+			rules, err := yr.LoadRules(*yara)
+			if err != nil {
+				logger.Warn("failed to get yara rules: %v", err)
+				goto SKIPYARA
+			}
+			p.Rules = rules
+		}
+	SKIPYARA:
 
 		if replacer != nil {
 			p.Replacers = append(p.Replacers, replacer)

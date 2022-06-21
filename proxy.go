@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+
+	yara "github.com/hillu/go-yara"
 )
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
@@ -19,6 +21,7 @@ type Proxy struct {
 
 	Matcher   func([]byte)
 	Replacers []Replacer
+	Scanner   *yara.Scanner
 
 	// Settings
 	Nagles    bool
@@ -92,6 +95,11 @@ func (p *Proxy) Start() {
 	p.Log.Info("Closed (%d bytes sent, %d bytes recieved)", p.sentBytes, p.receivedBytes)
 }
 
+func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, error) {
+	p.Log.Info("Rule %s matched: dropping packet", rule.Identifier)
+	return true, nil
+}
+
 func (p *Proxy) err(s string, err error) {
 	if p.erred {
 		return
@@ -138,6 +146,10 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		//execute replace
 		for _, replacer := range p.Replacers {
 			b = replacer.Replace(b)
+		}
+
+		if p.Scanner != nil {
+			p.Scanner.ScanMem(b)
 		}
 
 		//show output

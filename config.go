@@ -93,14 +93,25 @@ func (r ReplacerConfig) Parse() (Replacer, error) {
 		}
 		return &RegexReplacer{*pattern, replStr}, nil
 	case "bytes":
-		findBytes, ok := r.Find.([]byte)
+
+		iFindBytes, ok := r.Find.([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("find field not of type []byte")
+			return nil, fmt.Errorf("find field not a slice: was %T", r.Replace)
 		}
-		replaceBytes, ok := r.Replace.([]byte)
+		iReplaceBytes, ok := r.Replace.([]interface{})
 		if !ok {
-			return nil, fmt.Errorf("find field not of type []byte")
+			return nil, fmt.Errorf("find field is not a slice: was %T", r.Replace)
 		}
+
+		findBytes, err := parseByteSlice(iFindBytes)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse search slice as bytes: %w", err)
+		}
+		replaceBytes, err := parseByteSlice(iReplaceBytes)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse replace slice as bytes: %w", err)
+		}
+
 		if len(findBytes) == 0 {
 			return nil, fmt.Errorf("no search bytes provided")
 		}
@@ -108,6 +119,25 @@ func (r ReplacerConfig) Parse() (Replacer, error) {
 	default:
 		return nil, fmt.Errorf("unsupported replacer type: <%s>", r.ReplacerType)
 	}
+}
+
+func parseByteSlice(s []interface{}) ([]byte, error) {
+	var bSlice []byte
+
+	for i, elem := range s {
+		iVal, ok := elem.(int)
+		if !ok {
+			return nil, fmt.Errorf("value of type %T at index %d", elem, i)
+		}
+
+		if iVal < 0 || iVal > 255 {
+			return nil, fmt.Errorf("value out of range for byte: %d", iVal)
+		}
+
+		b := byte(iVal)
+		bSlice = append(bSlice, b)
+	}
+	return bSlice, nil
 }
 
 func (p *Proxy) LoadConfig(config []byte) error {

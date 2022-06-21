@@ -3,19 +3,23 @@ package proxy
 import (
 	"bytes"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 var configValid = `
 - type: substring
-  find: foo
-  replace: bar
+  find: "foo"
+  replace: "bar"
 - type: regex
-  pattern: "[a-f0-9]{4}"
-  replace: 1337
+  find: "[a-f0-9]{4}"
+  replace: "1337"
 - type: bytes
-  findbytes: [0x11, 0x22, 0x33, 0x44]
-  replacebytes: [0x55, 0x66, 0x77, 0x88]
+  find: [0x11, 0x22, 0x33, 0x44]
+  replace: [0x55, 0x66, 0x77, 0x88]
 `
+
+var sliceLen = 4
 
 var invalidConfigs = []string{
 	`
@@ -41,6 +45,11 @@ func TestConfigParse(t *testing.T) {
 	}
 
 	for _, f := range p.Replacers {
+		if s, ok := f.(*BytesReplacer); ok {
+			if len(s.In) != sliceLen {
+				t.Errorf("slice too big: wanted %d elements, got %d", sliceLen, len(s.In))
+			}
+		}
 		t.Log(f.String())
 	}
 
@@ -49,8 +58,33 @@ func TestConfigParse(t *testing.T) {
 		if err == nil {
 			t.Errorf("error should have been returned on invalid config parse")
 		}
-		t.Log(err.Error())
+		// t.Log(err.Error())
 	}
+}
+
+func TestYamlRead(t *testing.T) {
+	var r []ReplacerConfig
+
+	err := yaml.Unmarshal([]byte(configValid), &r)
+	if err != nil {
+		t.Errorf("error reading config: %v", err)
+	}
+
+	for _, repl := range r {
+
+		if repl.ReplacerType == "bytes" {
+			f, ok := repl.Find.([]interface{})
+			if !ok {
+				t.Errorf("unexpected type: wanted slice, got %T", repl.Find)
+			}
+
+			if len(f) != sliceLen {
+				t.Errorf("unexpected element count: wanted %d, got %d",
+					sliceLen, len(f))
+			}
+		}
+	}
+
 }
 
 func TestReplaceByte(t *testing.T) {
