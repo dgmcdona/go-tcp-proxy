@@ -96,13 +96,8 @@ func (p *Proxy) Start() {
 }
 
 func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, error) {
-	p.Log.Info("Rule %s matched: terminating connection", rule.Identifier)
-	if err := p.lconn.Close(); err != nil {
-		p.Log.Warn("error closing connection: %v", err)
-	}
-	if err := p.rconn.Close(); err != nil {
-		p.Log.Warn("error closing connection: %v", err)
-	}
+	p.Log.Info("Rule %s matched: terminating connection", rule.Identifier())
+	p.errsig <- true
 	return false, nil
 }
 
@@ -154,7 +149,7 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 			b = replacer.Replace(b)
 		}
 
-		if p.Scanner != nil {
+		if p.Scanner != nil && islocal {
 			p.Scanner.ScanMem(b)
 		}
 
