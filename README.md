@@ -75,6 +75,15 @@ Replacing "ip": "([^"]+)" with "ip": "REDACTED"
 
 *Note: The `-replace` option is in the form `regex~replacer`. Where `replacer` may contain `$N` to substitute in group `N`.*
 
+### Building from docker container
+
+In order to produce a static binary while using `cgo` and the `libyara` library,
+a dockerfile has been included which will compile the file and export it to the
+`out` directory when the following command has run:
+```
+sudo DOCKER_BUILDKIT=1 docker build --target export -t test . --output out
+```
+
 ### Todo
 
 * Implement `tcpproxy.Conn` which provides accounting and hooks into the underlying `net.Conn`
