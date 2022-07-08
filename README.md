@@ -10,16 +10,27 @@ This project was intended for debugging text-based protocols. The next version w
 ```
 $ tcp-proxy --help
 Usage of tcp-proxy:
-  -c: output ansi colors
-  -h: output hex
-  -l="localhost:9999": local address
-  -n: disable nagles algorithm
-  -r="localhost:80": remote address
-  -config="": apply line-separated list of filter regexes from text file
-  -match="": match regex (in the form 'regex')
-  -replace="": replace regex (in the form 'regex~replacer')
-  -v: display server actions
-  -vv: display server actions and all tcp data
+Usage of out/tcp-proxy:
+  -c	output ansi colors
+  -config string
+    	path to YAML config file containing filter rules, one per line
+  -h	output hex
+  -l string
+    	local address (default ":9999")
+  -match string
+    	match regex (in the form 'regex')
+  -n	disable nagles algorithm
+  -r string
+    	remote address (default "localhost:80")
+  -replace string
+    	replace regex (in the form 'regex~replacer')
+  -unwrap-tls
+    	remote connection with TLS exposed unencrypted locally
+  -v	display server actions
+  -vv
+    	display server actions and all tcp data
+  -yara string
+    	path to file containing yara rules for connection blocking/logging
 ```
 
 *Note: Regex match and replace*
@@ -74,6 +85,13 @@ Replacing "ip": "([^"]+)" with "ip": "REDACTED"
 ```
 
 *Note: The `-replace` option is in the form `regex~replacer`. Where `replacer` may contain `$N` to substitute in group `N`.*
+
+### Yara example
+
+A file containing yara rules can be provided for each connection. Rules that are
+prefixed with `log_` will generate a log message upon matches but allow the
+connection to continue. All other rule matches will cause the connection to be
+dropped.
 
 ### Building from docker container
 

@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 
-	yara "github.com/hillu/go-yara/v4"
 	proxy "gitlab.cs.uno.edu/dgmcdona/go-tcp-proxy"
 )
 
@@ -26,6 +25,7 @@ var (
 	nagles      = flag.Bool("n", false, "disable nagles algorithm")
 	hex         = flag.Bool("h", false, "output hex")
 	colors      = flag.Bool("c", false, "output ansi colors")
+	bell        = flag.Bool("b", false, "print a bell control character when yara log rules matches")
 	unwrapTLS   = flag.Bool("unwrap-tls", false, "remote connection with TLS exposed unencrypted locally")
 	match       = flag.String("match", "", "match regex (in the form 'regex')")
 	replace     = flag.String("replace", "", "replace regex (in the form 'regex~replacer')")
@@ -85,6 +85,8 @@ func main() {
 			p = proxy.New(conn, laddr, raddr)
 		}
 
+		p.Bell = *bell
+
 		p.Log = proxy.ColorLogger{
 			Verbose:     *verbose,
 			VeryVerbose: *veryverbose,
@@ -100,7 +102,7 @@ func main() {
 			}
 		}
 		if *yaraConfig != "" {
-			if err := loadYaraConfig(p, *yaraConfig); err != nil {
+			if err := p.LoadYaraConfig(*yaraConfig); err != nil {
 				logger.Warn("error loading yara config: %v", err)
 			}
 		}
@@ -132,32 +134,6 @@ func loadSimpleConfig(p *proxy.Proxy, filePath string) error {
 	}
 	return nil
 
-}
-
-func loadYaraConfig(p *proxy.Proxy, filePath string) error {
-	cmp, err := yara.NewCompiler()
-	if err != nil {
-		return fmt.Errorf("error creating yara compiler: %v", err)
-	}
-	f, err := os.Open(*yaraConfig)
-	if err != nil {
-		return fmt.Errorf("failed to open yara config file: %v", err)
-	}
-	defer f.Close()
-	if err := cmp.AddFile(f, "proxy"); err != nil {
-		return fmt.Errorf("error adding file to compiler: %v", err)
-	}
-	rules, err := cmp.GetRules()
-	if err != nil {
-		return fmt.Errorf("failed to get yara rules: %v", err)
-	}
-	p.Scanner, err = yara.NewScanner(rules)
-	if err != nil {
-		p.Scanner = nil
-		return fmt.Errorf("failed to create new yara scanner: %v", err)
-	}
-	p.Scanner.SetCallback(p)
-	return nil
 }
 
 func createMatcher(match string) func([]byte) {

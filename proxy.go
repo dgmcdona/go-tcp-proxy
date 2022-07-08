@@ -2,11 +2,24 @@ package proxy
 
 import (
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"strings"
+	"sync"
 
 	yara "github.com/hillu/go-yara/v4"
 )
+
+var scanners sync.Map
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 0xffff)
+	},
+}
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
 type Proxy struct {
@@ -22,6 +35,7 @@ type Proxy struct {
 	Matcher   func([]byte)
 	Replacers []Replacer
 	Scanner   *yara.Scanner
+	Bell      bool
 
 	// Settings
 	Nagles    bool
@@ -96,8 +110,22 @@ func (p *Proxy) Start() {
 }
 
 func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, error) {
-	p.Log.Info("Rule %s matched: terminating connection", rule.Identifier())
-	p.errsig <- true
+	ruleID := rule.Identifier()
+	p.Log.Warn("Rule %s matched", ruleID)
+	for _, s := range rule.Strings() {
+		matches := s.Matches(ctx)
+		for _, m := range matches {
+			p.Log.Warn("%s: %s", s.Identifier(), string(m.Data()))
+		}
+	}
+
+	if strings.HasPrefix(ruleID, "log_") {
+		if p.Bell {
+			fmt.Print("\a")
+		}
+		return true, nil
+	}
+	p.err("connection terminated due to rule match on rule %s", errors.New(ruleID))
 	return false, nil
 }
 
@@ -130,8 +158,13 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 	}
 
 	//directional copy (64k buffer)
-	buff := make([]byte, 0xffff)
+	buff := bufPool.Get().([]byte)
+	defer bufPool.Put(buff)
+
 	for {
+		if p.erred {
+			break
+		}
 		n, err := src.Read(buff)
 		if err != nil {
 			p.err("Read failed '%s'\n", err)
@@ -169,4 +202,52 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 			p.receivedBytes += uint64(n)
 		}
 	}
+}
+
+func (p *Proxy) LoadYaraConfig(filePath string) error {
+	fi, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to stat yara config: %v", err)
+	}
+	if iScanner, ok := scanners.Load(fi.ModTime()); ok {
+		scanner, _ := iScanner.(yara.Scanner)
+		p.Scanner = &scanner
+		p.Scanner.SetCallback(p)
+		return nil
+	}
+
+	configChange := "modified"
+	if fi.ModTime().IsZero() {
+		configChange = "created"
+	}
+	p.Log.Info("yara rules file %s - compiling", configChange)
+
+	cmp, err := yara.NewCompiler()
+	if err != nil {
+		return fmt.Errorf("error creating yara compiler: %v", err)
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open yara config file: %v", err)
+	}
+	defer f.Close()
+	if err := cmp.AddFile(f, "proxy"); err != nil {
+		return fmt.Errorf("error adding file to compiler: %v", err)
+	}
+	rules, err := cmp.GetRules()
+	if err != nil {
+		return fmt.Errorf("failed to get yara rules: %v", err)
+	}
+	scanner, err := yara.NewScanner(rules)
+	if err != nil {
+		return fmt.Errorf("failed to create new yara scanner: %v", err)
+	}
+	p.Scanner = scanner
+	scanners.Range(func(key interface{}, value interface{}) bool {
+		scanners.Delete(key)
+		return true
+	})
+	scanners.Store(fi.ModTime(), *scanner)
+	p.Scanner.SetCallback(p)
+	return nil
 }
