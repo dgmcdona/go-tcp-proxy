@@ -2,9 +2,15 @@ package proxy
 
 import (
 	"crypto/tls"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"strings"
+	"sync"
 
+	"github.com/fsnotify/fsnotify"
 	yara "github.com/hillu/go-yara/v4"
 )
 
@@ -19,9 +25,9 @@ type Proxy struct {
 	tlsUnwrapp    bool
 	tlsAddress    string
 
-	Matcher   func([]byte)
-	Replacers []Replacer
-	Scanner   *yara.Scanner
+	scannerLock sync.Mutex
+	Scanner     *yara.Scanner
+	Watcher     *fsnotify.Watcher
 
 	// Settings
 	Nagles    bool
@@ -61,7 +67,7 @@ func (p *Proxy) Start() {
 	defer p.lconn.Close()
 
 	var err error
-	//connect to remote
+	// connect to remote
 	if p.tlsUnwrapp {
 		p.rconn, err = tls.Dial("tcp", p.tlsAddress, nil)
 	} else {
@@ -73,7 +79,7 @@ func (p *Proxy) Start() {
 	}
 	defer p.rconn.Close()
 
-	//nagles?
+	// nagles?
 	if p.Nagles {
 		if conn, ok := p.lconn.(setNoDelayer); ok {
 			conn.SetNoDelay(true)
@@ -83,22 +89,101 @@ func (p *Proxy) Start() {
 		}
 	}
 
-	//display both ends
+	// display both ends
 	p.Log.Info("Opened %s >>> %s", p.laddr.String(), p.raddr.String())
 
-	//bidirectional copy
+	// bidirectional copy
+	if p.Scanner != nil && p.Watcher != nil {
+		go p.watchYaraFile()
+	}
 	go p.pipe(p.lconn, p.rconn)
 	go p.pipe(p.rconn, p.lconn)
 
-	//wait for close...
+	// wait for close...
 	<-p.errsig
 	p.Log.Info("Closed (%d bytes sent, %d bytes recieved)", p.sentBytes, p.receivedBytes)
 }
 
+func (p *Proxy) watchYaraFile() {
+	for {
+		evt := <-p.Watcher.Events
+		if !evt.Has(fsnotify.Write) {
+			continue
+		}
+		p.rebuildScanner()
+	}
+}
+
+func (p *Proxy) rebuildScanner() {
+	p.Log.Info("rulefile updated")
+	p.scannerLock.Lock()
+	defer p.scannerLock.Unlock()
+
+	path := p.Watcher.WatchList()[0]
+	r, err := os.Open(path)
+	if err != nil {
+		p.Log.Warn("failed to open yara rule file %s: %v", path, err)
+		return
+	}
+	rules, err := yara.ReadRules(r)
+	if err != nil {
+		p.Log.Warn("error reading yara rules in file %s: %v", path, err)
+		return
+	}
+	scanner, err := yara.NewScanner(rules)
+	if err != nil {
+		p.Log.Warn("failed to compile yara scanner for rules from file %s: %v", path, err)
+		return
+	}
+	p.Scanner = scanner
+}
+
 func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, error) {
-	p.Log.Info("Rule %s matched: terminating connection", rule.Identifier())
-	p.errsig <- true
+	tags := rule.Tags()
+	for _, tag := range tags {
+		id := rule.Identifier()
+		if strings.ToLower(tag) == "log" {
+			p.Log.Info("match found for rule %s", id)
+		}
+		if strings.ToLower(tag) == "warn" {
+			p.Log.Warn("match found for rule %s", id)
+		}
+		if strings.ToLower(tag) == "drop" {
+			p.err("dropping connection", fmt.Errorf("match on rule %s", id))
+		}
+	}
+
+	sub_value, ok := p.getSubstitution(rule.Metas())
+	for _, s := range rule.Strings() {
+	}
 	return false, nil
+}
+
+func (p *Proxy) getSubstitution(metas []yara.Meta) ([]byte, bool) {
+	var replacement []byte
+	var err error
+	meta_map := map[string]interface{}{}
+	for _, meta := range metas {
+		if strings.ToLower(meta.Identifier) != "sub" {
+			continue
+		}
+		mvs, ok := meta.Value.(string)
+		if !ok {
+			p.Log.Warn("substitution metadata value should be a string")
+			continue
+		}
+		if strings.HasPrefix(mvs, "{ ") && strings.HasSuffix(mvs, " }") {
+			bts_raw := strings.TrimRight(strings.TrimLeft(mvs, " {"), "} ")
+			bts := strings.ReplaceAll(bts_raw, " ", "")
+			replacement, err = hex.DecodeString(bts)
+			if err != nil {
+				p.Log.Warn("failed to parse substitution value as yara hex bytes")
+				continue
+			}
+			return replacement, true
+		} // else if
+	}
+	return nil, false
 }
 
 func (p *Proxy) err(s string, err error) {
@@ -106,7 +191,7 @@ func (p *Proxy) err(s string, err error) {
 		return
 	}
 	if err != io.EOF {
-		p.Log.Warn(s, err)
+		p.Log.Warn(s, err.Error())
 	}
 	p.errsig <- true
 	p.erred = true
@@ -129,7 +214,7 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		byteFormat = "%s"
 	}
 
-	//directional copy (64k buffer)
+	// directional copy (64k buffer)
 	buff := make([]byte, 0xffff)
 	for {
 		n, err := src.Read(buff)
@@ -139,25 +224,17 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		}
 		b := buff[:n]
 
-		//execute match
-		if p.Matcher != nil {
-			p.Matcher(b)
-		}
-
-		//execute replace
-		for _, replacer := range p.Replacers {
-			b = replacer.Replace(b)
-		}
-
 		if p.Scanner != nil && islocal {
+			p.scannerLock.Lock()
 			p.Scanner.ScanMem(b)
+			p.scannerLock.Unlock()
 		}
 
-		//show output
+		// show output
 		p.Log.Debug(dataDirection, n, "")
 		p.Log.Trace(byteFormat, b)
 
-		//write out result
+		// write out result
 		n, err = dst.Write(b)
 		if err != nil {
 			p.err("Write failed '%s'\n", err)
@@ -169,4 +246,39 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 			p.receivedBytes += uint64(n)
 		}
 	}
+}
+
+func (p *Proxy) LoadYaraConfig(filePath string) error {
+	cmp, err := yara.NewCompiler()
+	if err != nil {
+		return fmt.Errorf("error creating yara compiler: %v", err)
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open yara config file: %v", err)
+	}
+	defer f.Close()
+	if err := cmp.AddFile(f, "proxy"); err != nil {
+		return fmt.Errorf("error adding file to compiler: %v", err)
+	}
+	rules, err := cmp.GetRules()
+	if err != nil {
+		return fmt.Errorf("failed to get yara rules: %w", err)
+	}
+	p.Scanner, err = yara.NewScanner(rules)
+	if err != nil {
+		p.Scanner = nil
+		return fmt.Errorf("failed to create new yara scanner: %w", err)
+	}
+	p.Scanner.SetCallback(p)
+
+	p.Watcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create watcher for yara rules file: %w", err)
+	}
+	err = p.Watcher.Add(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to add file %s to file watcher: %w", filePath, err)
+	}
+	return nil
 }
