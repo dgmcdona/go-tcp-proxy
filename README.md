@@ -8,18 +8,6 @@ This project was intended for debugging text-based protocols. The next version w
 ## Usage
 
 ```
-$ tcp-proxy --help
-Usage of tcp-proxy:
-  -c: output ansi colors
-  -h: output hex
-  -l="localhost:9999": local address
-  -n: disable nagles algorithm
-  -r="localhost:80": remote address
-  -config="": apply line-separated list of filter regexes from text file
-  -match="": match regex (in the form 'regex')
-  -replace="": replace regex (in the form 'regex~replacer')
-  -v: display server actions
-  -vv: display server actions and all tcp data
 ```
 
 *Note: Regex match and replace*
@@ -45,35 +33,6 @@ $ curl -H 'Host: echo.jpillora.com' localhost:9999/foo
   ...
 }
 ```
-
-### Match Example
-
-```
-$ tcp-proxy -r echo.jpillora.com:80 -match 'Host: (.+)'
-Proxying from localhost:9999 to echo.jpillora.com:80
-Matching Host: (.+)
-
-#run curl again...
-
-Connection #001 Match #1: Host: echo.jpillora.com
-```
-
-### Replace Example
-
-```
-$ tcp-proxy -r echo.jpillora.com:80 -replace '"ip": "([^"]+)"~"ip": "REDACTED"'
-Proxying from localhost:9999 to echo.jpillora.com:80
-Replacing "ip": "([^"]+)" with "ip": "REDACTED"
-```
-
-```
-#run curl again...
-{
-  "ip": "REDACTED",
-  ...
-```
-
-*Note: The `-replace` option is in the form `regex~replacer`. Where `replacer` may contain `$N` to substitute in group `N`.*
 
 ### Building from docker container
 

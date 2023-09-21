@@ -18,6 +18,7 @@ var (
 	verbose    = pflag.CountP("verbose", "v", "verbose logging")
 	nagles     = pflag.BoolP("nagles", "n", false, "disable nagles algorithm")
 	hex        = pflag.BoolP("hex", "h", false, "output hex")
+	help       = pflag.Bool("help", false, "output hex")
 	colors     = pflag.BoolP("colors", "c", false, "output ansi colors")
 	unwrapTLS  = pflag.BoolP("unwrap-tls", "u", false, "remote connection with TLS exposed unencrypted locally")
 	yaraConfig = pflag.StringP("yara", "y", "", "path to file containing yara rules for connection blocking")
@@ -25,6 +26,11 @@ var (
 
 func main() {
 	pflag.Parse()
+
+	if *help {
+		pflag.Usage()
+		return
+	}
 
 	logger := proxy.ColorLogger{
 		Level: *verbose,

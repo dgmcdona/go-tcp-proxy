@@ -29,10 +29,25 @@ type Proxy struct {
 	Scanner     *yara.Scanner
 	Watcher     *fsnotify.Watcher
 
+	replacements []matchLocation
+
 	// Settings
 	Nagles    bool
 	Log       Logger
 	OutputHex bool
+}
+
+type matchLocation struct {
+	offset      int64
+	length      int
+	replacement []byte
+}
+
+func (mr *matchLocation) Replace(input []byte) []byte {
+	data := input[:mr.offset]
+	data = append(data, mr.replacement...)
+	data = append(data, input[mr.offset+int64(mr.length):]...)
+	return data
 }
 
 // New - Create a new Proxy instance. Takes over local connection passed in,
@@ -115,7 +130,7 @@ func (p *Proxy) watchYaraFile() {
 }
 
 func (p *Proxy) rebuildScanner() {
-	p.Log.Info("rulefile updated")
+	p.Log.Info("rulefile updated, rebuilding scanner")
 	p.scannerLock.Lock()
 	defer p.scannerLock.Unlock()
 
@@ -125,11 +140,13 @@ func (p *Proxy) rebuildScanner() {
 		p.Log.Warn("failed to open yara rule file %s: %v", path, err)
 		return
 	}
+
 	rules, err := yara.ReadRules(r)
 	if err != nil {
 		p.Log.Warn("error reading yara rules in file %s: %v", path, err)
 		return
 	}
+
 	scanner, err := yara.NewScanner(rules)
 	if err != nil {
 		p.Log.Warn("failed to compile yara scanner for rules from file %s: %v", path, err)
@@ -154,7 +171,19 @@ func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, erro
 	}
 
 	sub_value, ok := p.getSubstitution(rule.Metas())
+	if !ok {
+		return false, nil
+	}
 	for _, s := range rule.Strings() {
+		for _, match := range s.Matches(ctx) {
+			ofs := match.Offset()
+			l := len(match.Data())
+			p.replacements = append(p.replacements, matchLocation{
+				ofs,
+				l,
+				sub_value,
+			})
+		}
 	}
 	return false, nil
 }
@@ -162,7 +191,6 @@ func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, erro
 func (p *Proxy) getSubstitution(metas []yara.Meta) ([]byte, bool) {
 	var replacement []byte
 	var err error
-	meta_map := map[string]interface{}{}
 	for _, meta := range metas {
 		if strings.ToLower(meta.Identifier) != "sub" {
 			continue
@@ -172,7 +200,8 @@ func (p *Proxy) getSubstitution(metas []yara.Meta) ([]byte, bool) {
 			p.Log.Warn("substitution metadata value should be a string")
 			continue
 		}
-		if strings.HasPrefix(mvs, "{ ") && strings.HasSuffix(mvs, " }") {
+		mvs_stripped := strings.TrimSpace(mvs)
+		if strings.HasPrefix(mvs_stripped, "{ ") && strings.HasSuffix(mvs, " }") {
 			bts_raw := strings.TrimRight(strings.TrimLeft(mvs, " {"), "} ")
 			bts := strings.ReplaceAll(bts_raw, " ", "")
 			replacement, err = hex.DecodeString(bts)
@@ -181,7 +210,9 @@ func (p *Proxy) getSubstitution(metas []yara.Meta) ([]byte, bool) {
 				continue
 			}
 			return replacement, true
-		} // else if
+		} else {
+			return []byte(mvs), true
+		}
 	}
 	return nil, false
 }
@@ -191,7 +222,7 @@ func (p *Proxy) err(s string, err error) {
 		return
 	}
 	if err != io.EOF {
-		p.Log.Warn(s, err.Error())
+		p.Log.Warn(fmt.Sprintf("%s: %s", s, err.Error()))
 	}
 	p.errsig <- true
 	p.erred = true
@@ -228,6 +259,14 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 			p.scannerLock.Lock()
 			p.Scanner.ScanMem(b)
 			p.scannerLock.Unlock()
+		}
+
+		for _, rep := range p.replacements {
+			b = rep.Replace(b)
+		}
+
+		if p.erred {
+			return
 		}
 
 		// show output
