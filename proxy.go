@@ -202,7 +202,7 @@ func (p *Proxy) getSubstitution(metas []yara.Meta) ([]byte, bool) {
 		}
 		mvs_stripped := strings.TrimSpace(mvs)
 		if strings.HasPrefix(mvs_stripped, "{ ") && strings.HasSuffix(mvs, " }") {
-			bts_raw := strings.TrimRight(strings.TrimLeft(mvs, " {"), "} ")
+			bts_raw := strings.TrimRight(strings.TrimLeft(mvs_stripped, "{"), "}")
 			bts := strings.ReplaceAll(bts_raw, " ", "")
 			replacement, err = hex.DecodeString(bts)
 			if err != nil {
