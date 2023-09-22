@@ -2,7 +2,7 @@ package proxy
 
 import (
 	"crypto/tls"
-	"errors"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -10,16 +10,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fsnotify/fsnotify"
 	yara "github.com/hillu/go-yara/v4"
 )
-
-var scanners sync.Map
-
-var bufPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 0xffff)
-	},
-}
 
 // Proxy - Manages a Proxy connection, piping data between local and remote.
 type Proxy struct {
@@ -32,15 +25,29 @@ type Proxy struct {
 	tlsUnwrapp    bool
 	tlsAddress    string
 
-	Matcher   func([]byte)
-	Replacers []Replacer
-	Scanner   *yara.Scanner
-	Bell      bool
+	scannerLock sync.Mutex
+	Scanner     *yara.Scanner
+	Watcher     *fsnotify.Watcher
+
+	replacements []matchLocation
 
 	// Settings
 	Nagles    bool
 	Log       Logger
 	OutputHex bool
+}
+
+type matchLocation struct {
+	offset      int64
+	length      int
+	replacement []byte
+}
+
+func (mr *matchLocation) Replace(input []byte) []byte {
+	data := input[:mr.offset]
+	data = append(data, mr.replacement...)
+	data = append(data, input[mr.offset+int64(mr.length):]...)
+	return data
 }
 
 // New - Create a new Proxy instance. Takes over local connection passed in,
@@ -75,7 +82,7 @@ func (p *Proxy) Start() {
 	defer p.lconn.Close()
 
 	var err error
-	//connect to remote
+	// connect to remote
 	if p.tlsUnwrapp {
 		p.rconn, err = tls.Dial("tcp", p.tlsAddress, nil)
 	} else {
@@ -87,7 +94,7 @@ func (p *Proxy) Start() {
 	}
 	defer p.rconn.Close()
 
-	//nagles?
+	// nagles?
 	if p.Nagles {
 		if conn, ok := p.lconn.(setNoDelayer); ok {
 			conn.SetNoDelay(true)
@@ -97,36 +104,117 @@ func (p *Proxy) Start() {
 		}
 	}
 
-	//display both ends
+	// display both ends
 	p.Log.Info("Opened %s >>> %s", p.laddr.String(), p.raddr.String())
 
-	//bidirectional copy
+	// bidirectional copy
+	if p.Scanner != nil && p.Watcher != nil {
+		go p.watchYaraFile()
+	}
 	go p.pipe(p.lconn, p.rconn)
 	go p.pipe(p.rconn, p.lconn)
 
-	//wait for close...
+	// wait for close...
 	<-p.errsig
 	p.Log.Info("Closed (%d bytes sent, %d bytes recieved)", p.sentBytes, p.receivedBytes)
 }
 
+func (p *Proxy) watchYaraFile() {
+	for {
+		evt := <-p.Watcher.Events
+		if !evt.Has(fsnotify.Write) {
+			continue
+		}
+		p.rebuildScanner()
+	}
+}
+
+func (p *Proxy) rebuildScanner() {
+	p.Log.Info("rulefile updated, rebuilding scanner")
+	p.scannerLock.Lock()
+	defer p.scannerLock.Unlock()
+
+	path := p.Watcher.WatchList()[0]
+	r, err := os.Open(path)
+	if err != nil {
+		p.Log.Warn("failed to open yara rule file %s: %v", path, err)
+		return
+	}
+
+	rules, err := yara.ReadRules(r)
+	if err != nil {
+		p.Log.Warn("error reading yara rules in file %s: %v", path, err)
+		return
+	}
+
+	scanner, err := yara.NewScanner(rules)
+	if err != nil {
+		p.Log.Warn("failed to compile yara scanner for rules from file %s: %v", path, err)
+		return
+	}
+	p.Scanner = scanner
+}
+
 func (p *Proxy) RuleMatching(ctx *yara.ScanContext, rule *yara.Rule) (bool, error) {
-	ruleID := rule.Identifier()
-	p.Log.Warn("Rule %s matched", ruleID)
-	for _, s := range rule.Strings() {
-		matches := s.Matches(ctx)
-		for _, m := range matches {
-			p.Log.Warn("%s: %s", s.Identifier(), string(m.Data()))
+	tags := rule.Tags()
+	for _, tag := range tags {
+		id := rule.Identifier()
+		if strings.ToLower(tag) == "log" {
+			p.Log.Info("match found for rule %s", id)
+		}
+		if strings.ToLower(tag) == "warn" {
+			p.Log.Warn("match found for rule %s", id)
+		}
+		if strings.ToLower(tag) == "drop" {
+			p.err("dropping connection", fmt.Errorf("match on rule %s", id))
 		}
 	}
 
-	if strings.HasPrefix(ruleID, "log_") {
-		if p.Bell {
-			fmt.Print("\a")
-		}
-		return true, nil
+	sub_value, ok := p.getSubstitution(rule.Metas())
+	if !ok {
+		return false, nil
 	}
-	p.err("connection terminated due to rule match on rule %s", errors.New(ruleID))
+	for _, s := range rule.Strings() {
+		for _, match := range s.Matches(ctx) {
+			ofs := match.Offset()
+			l := len(match.Data())
+			p.replacements = append(p.replacements, matchLocation{
+				ofs,
+				l,
+				sub_value,
+			})
+		}
+	}
 	return false, nil
+}
+
+func (p *Proxy) getSubstitution(metas []yara.Meta) ([]byte, bool) {
+	var replacement []byte
+	var err error
+	for _, meta := range metas {
+		if strings.ToLower(meta.Identifier) != "sub" {
+			continue
+		}
+		mvs, ok := meta.Value.(string)
+		if !ok {
+			p.Log.Warn("substitution metadata value should be a string")
+			continue
+		}
+		mvs_stripped := strings.TrimSpace(mvs)
+		if strings.HasPrefix(mvs_stripped, "{ ") && strings.HasSuffix(mvs, " }") {
+			bts_raw := strings.TrimRight(strings.TrimLeft(mvs_stripped, "{"), "}")
+			bts := strings.ReplaceAll(bts_raw, " ", "")
+			replacement, err = hex.DecodeString(bts)
+			if err != nil {
+				p.Log.Warn("failed to parse substitution value as yara hex bytes")
+				continue
+			}
+			return replacement, true
+		} else {
+			return []byte(mvs), true
+		}
+	}
+	return nil, false
 }
 
 func (p *Proxy) err(s string, err error) {
@@ -134,7 +222,7 @@ func (p *Proxy) err(s string, err error) {
 		return
 	}
 	if err != io.EOF {
-		p.Log.Warn(s, err)
+		p.Log.Warn(fmt.Sprintf("%s: %s", s, err.Error()))
 	}
 	p.errsig <- true
 	p.erred = true
@@ -157,14 +245,9 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		byteFormat = "%s"
 	}
 
-	//directional copy (64k buffer)
-	buff := bufPool.Get().([]byte)
-	defer bufPool.Put(buff)
-
+	// directional copy (64k buffer)
+	buff := make([]byte, 0xffff)
 	for {
-		if p.erred {
-			break
-		}
 		n, err := src.Read(buff)
 		if err != nil {
 			p.err("Read failed '%s'\n", err)
@@ -172,25 +255,25 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 		}
 		b := buff[:n]
 
-		//execute match
-		if p.Matcher != nil {
-			p.Matcher(b)
-		}
-
-		//execute replace
-		for _, replacer := range p.Replacers {
-			b = replacer.Replace(b)
-		}
-
 		if p.Scanner != nil && islocal {
+			p.scannerLock.Lock()
 			p.Scanner.ScanMem(b)
+			p.scannerLock.Unlock()
 		}
 
-		//show output
+		for _, rep := range p.replacements {
+			b = rep.Replace(b)
+		}
+
+		if p.erred {
+			return
+		}
+
+		// show output
 		p.Log.Debug(dataDirection, n, "")
 		p.Log.Trace(byteFormat, b)
 
-		//write out result
+		// write out result
 		n, err = dst.Write(b)
 		if err != nil {
 			p.err("Write failed '%s'\n", err)
@@ -205,23 +288,6 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 }
 
 func (p *Proxy) LoadYaraConfig(filePath string) error {
-	fi, err := os.Stat(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to stat yara config: %v", err)
-	}
-	if iScanner, ok := scanners.Load(fi.ModTime()); ok {
-		scanner, _ := iScanner.(yara.Scanner)
-		p.Scanner = &scanner
-		p.Scanner.SetCallback(p)
-		return nil
-	}
-
-	configChange := "modified"
-	if fi.ModTime().IsZero() {
-		configChange = "created"
-	}
-	p.Log.Info("yara rules file %s - compiling", configChange)
-
 	cmp, err := yara.NewCompiler()
 	if err != nil {
 		return fmt.Errorf("error creating yara compiler: %v", err)
@@ -236,18 +302,22 @@ func (p *Proxy) LoadYaraConfig(filePath string) error {
 	}
 	rules, err := cmp.GetRules()
 	if err != nil {
-		return fmt.Errorf("failed to get yara rules: %v", err)
+		return fmt.Errorf("failed to get yara rules: %w", err)
 	}
-	scanner, err := yara.NewScanner(rules)
+	p.Scanner, err = yara.NewScanner(rules)
 	if err != nil {
-		return fmt.Errorf("failed to create new yara scanner: %v", err)
+		p.Scanner = nil
+		return fmt.Errorf("failed to create new yara scanner: %w", err)
 	}
-	p.Scanner = scanner
-	scanners.Range(func(key interface{}, value interface{}) bool {
-		scanners.Delete(key)
-		return true
-	})
-	scanners.Store(fi.ModTime(), *scanner)
 	p.Scanner.SetCallback(p)
+
+	p.Watcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create watcher for yara rules file: %w", err)
+	}
+	err = p.Watcher.Add(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to add file %s to file watcher: %w", filePath, err)
+	}
 	return nil
 }
