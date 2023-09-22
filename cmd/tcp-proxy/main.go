@@ -71,6 +71,8 @@ func main() {
 			p = proxy.New(conn, laddr, raddr)
 		}
 
+		p.Bell = *bell
+
 		p.Log = proxy.ColorLogger{
 			Level:  *verbose,
 			Prefix: fmt.Sprintf("Connection #%03d ", connid),

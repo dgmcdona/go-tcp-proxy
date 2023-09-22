@@ -14,6 +14,14 @@ import (
 	yara "github.com/hillu/go-yara/v4"
 )
 
+var scanners sync.Map
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 0xffff)
+	},
+}
+
 // Proxy - Manages a Proxy connection, piping data between local and remote.
 type Proxy struct {
 	sentBytes     uint64
@@ -248,6 +256,9 @@ func (p *Proxy) pipe(src, dst io.ReadWriter) {
 	// directional copy (64k buffer)
 	buff := make([]byte, 0xffff)
 	for {
+		if p.erred {
+			break
+		}
 		n, err := src.Read(buff)
 		if err != nil {
 			p.err("Read failed '%s'\n", err)
