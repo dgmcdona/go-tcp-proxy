@@ -31,14 +31,15 @@ func (l NullLogger) Warn(f string, args ...interface{}) {}
 
 // ColorLogger - A Logger that logs to stdout in color
 type ColorLogger struct {
-	Level  int
-	Prefix string
-	Color  bool
+	VeryVerbose bool
+	Verbose     bool
+	Prefix      string
+	Color       bool
 }
 
 // Trace - Log a very verbose trace message
 func (l ColorLogger) Trace(f string, args ...interface{}) {
-	if !(l.Level == 2) {
+	if !l.VeryVerbose {
 		return
 	}
 	l.output("blue", f, args...)
@@ -46,7 +47,7 @@ func (l ColorLogger) Trace(f string, args ...interface{}) {
 
 // Debug - Log a debug message
 func (l ColorLogger) Debug(f string, args ...interface{}) {
-	if !(l.Level == 1) {
+	if !l.Verbose {
 		return
 	}
 	l.output("green", f, args...)

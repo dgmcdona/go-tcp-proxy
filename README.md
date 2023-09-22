@@ -2,56 +2,40 @@
 
 A small TCP proxy written in Go
 
-This project was forked from https://github.com/jpillora/go-tcp-proxy, which was originally designed for working with text-based protocols. We have redesigned it to support filtering and replacement through yara rules. It works as a simple TCP proxy, with an option to scan each TCP packet with one or more yara rules.
+This project was intended for debugging text-based protocols. The next version will address binary protocols.
+
 
 ## Usage
 
 ```
-Usage of ./tcp-proxy:
-  -c, --colors                  output ansi colors
-      --help                    output hex
-  -h, --hex                     output hex
-  -l, --local-address string    local address (default ":9999")
-  -n, --nagles                  disable nagles algorithm
-  -r, --remote-address string   remote address (default "localhost:80")
-  -u, --unwrap-tls              remote connection with TLS exposed unencrypted locally
-  -v, --verbose count           verbose logging
-  -y, --yara string             path to file containing yara rules for connection blocking
-
+$ tcp-proxy --help
+Usage of tcp-proxy:
+Usage of out/tcp-proxy:
+  -c	output ansi colors
+  -config string
+    	path to YAML config file containing filter rules, one per line
+  -h	output hex
+  -l string
+    	local address (default ":9999")
+  -match string
+    	match regex (in the form 'regex')
+  -n	disable nagles algorithm
+  -r string
+    	remote address (default "localhost:80")
+  -replace string
+    	replace regex (in the form 'regex~replacer')
+  -unwrap-tls
+    	remote connection with TLS exposed unencrypted locally
+  -v	display server actions
+  -vv
+    	display server actions and all tcp data
+  -yara string
+    	path to file containing yara rules for connection blocking/logging
 ```
 
- If you want a connection to be dropped on a yara rule match, add a `drop` tag to that rule. If you want a connection to be logged on a yara rule match, include either the `log` or `warn` tags.
-
-For example, the following rule issues a warning message and terminates the connection if the rule matches TCP packet data:
-```yara
-rule FooRule: warn drop
-{
-    strings:
-        $my_text_string = "foo"
-        $my_hex_string = { E2 34 A1 C8 23 FB }
-
-    condition:
-        $my_text_string or $my_hex_string
-}
-```
-
-You can replace matching bytes by specifying a `sub` rule metadata item, with either text, or bytes in the usual yara syntax. For example, the following rule replaces a string match of "bar" with four `\x41` (ascii 'A') characters:
-
-```yara
-rule BarRule: warn
-{
-    meta:
-        sub = "{ 41 41 41 41 }"
-
-    strings:
-        $a = "bar"
-
-    condition:
-        $a
-}
-```
-
-*does NOT work across packet boundaries*
+*Note: Regex match and replace*
+**only works on text strings**
+*and does NOT work across packet boundaries*
 
 ### Simple Example
 
@@ -72,6 +56,42 @@ $ curl -H 'Host: echo.jpillora.com' localhost:9999/foo
   ...
 }
 ```
+
+### Match Example
+
+```
+$ tcp-proxy -r echo.jpillora.com:80 -match 'Host: (.+)'
+Proxying from localhost:9999 to echo.jpillora.com:80
+Matching Host: (.+)
+
+#run curl again...
+
+Connection #001 Match #1: Host: echo.jpillora.com
+```
+
+### Replace Example
+
+```
+$ tcp-proxy -r echo.jpillora.com:80 -replace '"ip": "([^"]+)"~"ip": "REDACTED"'
+Proxying from localhost:9999 to echo.jpillora.com:80
+Replacing "ip": "([^"]+)" with "ip": "REDACTED"
+```
+
+```
+#run curl again...
+{
+  "ip": "REDACTED",
+  ...
+```
+
+*Note: The `-replace` option is in the form `regex~replacer`. Where `replacer` may contain `$N` to substitute in group `N`.*
+
+### Yara example
+
+A file containing yara rules can be provided for each connection. Rules that are
+prefixed with `log_` will generate a log message upon matches but allow the
+connection to continue. All other rule matches will cause the connection to be
+dropped.
 
 ### Building from docker container
 
