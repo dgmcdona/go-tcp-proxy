@@ -116,6 +116,9 @@ func (p *Proxy) Start() {
 
 	// wait for close...
 	<-p.errsig
+	if p.Watcher != nil {
+		p.Watcher.Close()
+	}
 	p.Log.Info("Closed (%d bytes sent, %d bytes recieved)", p.sentBytes, p.receivedBytes)
 }
 
