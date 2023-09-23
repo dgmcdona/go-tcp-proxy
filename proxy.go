@@ -297,6 +297,7 @@ func (p *Proxy) LoadYaraConfig(filePath string) error {
 		return fmt.Errorf("failed to open yara config file: %v", err)
 	}
 	defer f.Close()
+
 	if err := cmp.AddFile(f, "proxy"); err != nil {
 		return fmt.Errorf("error adding file to compiler: %v", err)
 	}
